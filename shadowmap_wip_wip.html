@@ -1,0 +1,1053 @@
+<!DOCTYPE html>
+<html>
+<head lang="en">
+<meta charset='UTF-8'/>
+<title>WebGL shadows</title>
+<!-- http://www.khronos.org/registry/gles/specs/2.0/es_full_spec_2.0.25.pdf -->
+
+<style type="text/css">
+	body
+	{
+		background-color: #54A8FF;
+	}
+
+	.ui-frame
+	{
+		min-width: 75px;
+		text-align: center;
+		font-family: monospace;
+		color: white;
+		background-color: #542788;
+		border: 2px solid #FFFFFF;
+		opacity: 1.0;
+		border-radius: 5px;
+		padding: 5px;
+	}
+
+	#scene-frame
+	{
+		position: relative;
+		margin: auto;
+		width: 1280px;
+		height: 720px;
+	}
+
+	#scene-canvas
+	{
+		display: block;
+		cursor: move;
+	}
+
+	#fps-frame
+	{
+		position: absolute;
+		top: 5px;
+		left: 5px;
+		z-index: 2;
+	}
+
+	#settings-frame
+	{
+		margin-left: auto;
+		margin-right: auto;
+		width: 600px;
+	}
+</style>
+
+<script type="text/javascript" src="jquery.js"></script>
+<!-- http://api.jquery.com/ -->
+
+<script type="text/javascript" src="jquery.mousewheel.js"></script>
+<!-- https://github.com/brandonaaron/jquery-mousewheel -->
+
+<script type="text/javascript" src="gl-matrix.js"></script>
+<!-- http://glmatrix.net/docs/2.2.0 -->
+
+<script type="text/javascript">
+	var dash_vertices =
+	[
+		// x y u v
+		 0.0, 0.0, 0.0, 0.0,
+		 0.0, 1.0, 0.0, 1.0,
+		 1.0, 0.0, 1.0, 0.0,
+		 1.0, 1.0, 1.0, 1.0
+	];
+
+	var plane_vertices =
+	[
+		// x y z u v nx ny nz
+		-5.0, -0.001, -5.0, 0.0, 0.0, 0.0, 1.0, 0.0,
+		-5.0, -0.001,  5.0, 0.0, 1.0, 0.0, 1.0, 0.0,
+		 5.0, -0.001, -5.0, 1.0, 0.0, 0.0, 1.0, 0.0,
+		 5.0, -0.001,  5.0, 1.0, 1.0, 0.0, 1.0, 0.0
+	];
+
+	var cube_vertices =
+	[
+		// x y z u v nx ny nz
+		-1,  1,  1,  0,  0,  0,  0,  1,
+		-1, -1,  1,  0,  1,  0,  0,  1,
+		 1,  1,  1,  1,  0,  0,  0,  1,
+		 1, -1,  1,  1,  1,  0,  0,  1,
+
+		 1,  1, -1,  1,  0,  0,  0, -1,
+		 1, -1, -1,  1,  1,  0,  0, -1,
+		-1,  1, -1,  0,  0,  0,  0, -1,
+		-1, -1, -1,  0,  1,  0,  0, -1,
+
+		-1,  1, -1,  1,  1, -1,  0,  0,
+		-1, -1, -1,  0,  1, -1,  0,  0,
+		-1,  1,  1,  1,  0, -1,  0,  0,
+		-1, -1,  1,  0,  0, -1,  0,  0,
+
+		 1,  1,  1,  1,  0,  1,  0,  0,
+		 1, -1,  1,  0,  0,  1,  0,  0,
+		 1,  1, -1,  1,  1,  1,  0,  0,
+		 1, -1, -1,  0,  1,  1,  0,  0,
+
+		-1,  1,  1,  0,  0,  0,  1,  0,
+		 1,  1,  1,  1,  0,  0,  1,  0,
+		-1,  1, -1,  0,  1,  0,  1,  0,
+		 1,  1, -1,  1,  1,  0,  1,  0,
+
+		 1,  -1,  1,  1,  0,  0, -1,  0,
+		-1,  -1,  1,  0,  0,  0, -1,  0,
+		 1,  -1, -1,  1,  1,  0, -1,  0,
+		-1,  -1, -1,  0,  1,  0, -1,  0
+	];
+
+	var cube_indices =
+	[
+		 0,  1,  2,
+		 2,  1,  3,
+		 4,  5,  6,
+		 6,  5,  7,
+		 8,  9, 10,
+		10,  9, 11,
+		12, 13, 14,
+		14, 13, 15,
+		16, 17, 18,
+		18, 17, 19,
+		20, 21, 22,
+		22, 21, 23
+	];
+</script>
+
+<script id="shader-vs-caster" type="x-shader/x-vertex">
+	uniform mat4 matProj;
+	uniform mat4 matView;
+	uniform mat4 matWorld;
+
+	attribute vec3 aVertex;
+
+	varying vec2 vDepth;
+
+	void main(void)
+	{
+		gl_Position = matProj * matView * matWorld * vec4(aVertex, 1.0);
+		vDepth.xy = gl_Position.zw;
+	}
+</script>
+
+<script id="shader-fs-caster" type="x-shader/x-fragment">
+	precision mediump float;
+
+	varying vec2 vDepth;
+
+	vec4 pack(float depth)
+	{
+		vec4 bitShifts = vec4(256.0 * 256.0 * 256.0, 256.0 * 256.0, 256.0, 1.0);
+		vec4 bitMask = vec4(0, 1.0 / 256.0, 1.0 / 256.0, 1.0 / 256.0);
+
+		vec4 comp = fract(depth * bitShifts);
+		comp -= comp.xxyz * bitMask;
+		return comp;
+	}
+
+	void main(void)
+	{
+		gl_FragColor = pack((vDepth.x / vDepth.y) * 0.5 + 0.5);
+	}
+</script>
+
+<script id="shader-vs-receiver" type="x-shader/x-vertex">
+	uniform mat4 matLightProj;
+	uniform mat4 matLightView;
+	uniform mat4 matProj;
+	uniform mat4 matView;
+	uniform mat4 matWorld;
+	uniform vec3 uLight;
+	uniform vec3 uColour;
+
+	attribute vec3 aVertex;
+	attribute vec3 aNormal;
+
+	varying vec4 vShadowCoord;
+	varying vec3 vColour;
+	varying float cosTheta;
+
+	const mat4 matBias = mat4
+	(
+		0.5, 0.0, 0.0, 0.0,
+		0.0, 0.5, 0.0, 0.0,
+		0.0, 0.0, 0.5, 0.0,
+		0.5, 0.5, 0.5, 1.0
+	);
+
+	void main(void)
+	{
+		vec3 normal = (matWorld * vec4(aNormal, 0.0)).xyz;
+		cosTheta = dot(normalize(uLight), normalize(normal));
+		vColour = uColour;
+
+		vec4 vWorldVertex = matWorld * vec4(aVertex, 1.0);
+		gl_Position = matProj * matView * vWorldVertex;
+
+		vShadowCoord = matBias * matLightProj * matLightView * vWorldVertex;
+	}
+</script>
+
+<script id="shader-fs-receiver" type="x-shader/x-fragment">
+	precision mediump float;
+
+	uniform sampler2D uShadowSampler;
+
+	varying vec4 vShadowCoord;
+	varying vec3 vColour;
+	varying float cosTheta;
+
+	const vec2 size = vec2(512.0, 512.0);
+
+	float unpack(vec4 colour)
+	{
+		vec4 bitShifts = vec4(1.0 / ( 256.0 * 256.0 * 256.0), 1.0 / (256.0 * 256.0), 1.0 / 256.0, 1.0);
+		return dot(colour.xyzw, bitShifts);
+	}
+
+	float shadowCompare(vec2 uv, float compare)
+	{
+		float bias = 0.001;
+		float depth = unpack(texture2D(uShadowSampler, uv));
+		return step(depth, compare - bias); // (compare - bias < depth) ? 0 : 1
+	}
+
+	float shadowLerp(vec2 uv, float compare)
+	{
+		vec2 texelSize = vec2(1.0) / size;
+		vec2 f = fract(uv * size + 0.5); // fract = x - floor(x)
+		vec2 centroidUV = floor(uv * size + 0.5) / size;
+
+		float lb = shadowCompare(centroidUV + texelSize * vec2(0.0, 0.0), compare);
+		float lt = shadowCompare(centroidUV + texelSize * vec2(0.0, 1.0), compare);
+		float rb = shadowCompare(centroidUV + texelSize * vec2(1.0, 0.0), compare);
+		float rt = shadowCompare(centroidUV + texelSize * vec2(1.0, 1.0), compare);
+
+		float a = mix(lb, lt, f.y); // fy * lb + (1 - fy) * lt
+		float b = mix(rb, rt, f.y);
+		float c = mix(a, b, f.x);
+
+		return c;
+	}
+
+	float PCF(vec2 uv, float compare)
+	{
+		const float kernel_size = 9.0; // > 1 and % 2 = 1
+		float result = 0.0;
+
+		for (float x = -0.5 * (kernel_size - 1.0); x <= 0.5 * (kernel_size - 1.0); x += 1.0)
+		{
+			for (float y = -0.5 * (kernel_size - 1.0); y <= 0.5 * (kernel_size - 1.0); y += 1.0)
+			{
+				vec2 off = vec2(x, y) / size;
+				result += shadowCompare(uv + off, compare);
+			}
+		}
+
+		return result / (kernel_size * kernel_size);
+	}
+
+	float lerpPCF(vec2 uv, float compare)
+	{
+		const float kernel_size = 5.0; // > 1 and % 2 = 1
+		float result = 0.0;
+
+		for (float x = -0.5 * (kernel_size - 1.0); x <= 0.5 * (kernel_size - 1.0); x += 1.0)
+		{
+			for (float y = -0.5 * (kernel_size - 1.0); y <= 0.5 * (kernel_size - 1.0); y += 1.0)
+			{
+				vec2 off = vec2(x, y) / size;
+				result += shadowLerp(uv + off, compare);
+			}
+		}
+
+		return result / (kernel_size * kernel_size);
+	}
+
+	void main(void)
+	{
+		vec3 colour = vColour;
+		float pointDepth = vShadowCoord.z / vShadowCoord.w;
+
+		float shade = 0.0;
+
+		if (pointDepth < 1.0) // pixel inside light frustum
+			if (cosTheta > 0.25) // angled towards the light
+			{
+				// hard shadow
+//				shade = shadowCompare(vShadowCoord.xy, pointDepth);
+
+				// lerp
+//				shade = shadowLerp(vShadowCoord.xy, pointDepth);
+
+				// pcf
+				shade = PCF(vShadowCoord.xy, pointDepth);
+
+				// lerp pcf
+//				shade = lerpPCF(vShadowCoord.xy, pointDepth);
+			}
+
+		float light = max(cosTheta * (1.0 - shade), 0.33);
+
+		gl_FragColor = vec4(colour * light, 1.0);
+	}
+</script>
+
+<script id="shader-vs-dash" type="x-shader/x-vertex">
+	uniform mat3 matWorld;
+	uniform vec2 uResolution;
+
+	attribute vec2 aVertex;
+	attribute vec2 aTexCoord;
+
+	varying vec2 vTexCoord;
+
+	void main(void)
+	{
+		vTexCoord = aTexCoord;
+
+		vec2 worldVertex = (matWorld * vec3(aVertex, 1.0)).xy;
+		vec2 clipVertex = (worldVertex / uResolution) * 2.0 - 1.0;
+
+		gl_Position = vec4(clipVertex, 0.0, 1.0);
+	}
+</script>
+
+<script id="shader-fs-dash" type="x-shader/x-fragment">
+	precision mediump float;
+
+	uniform sampler2D uSampler;
+
+	varying vec2 vTexCoord;
+
+	float unpack(vec4 colour)
+	{
+		vec4 bitShifts = vec4(1.0 / ( 256.0 * 256.0 * 256.0), 1.0 / (256.0 * 256.0), 1.0 / 256.0, 1.0);
+		return dot(colour.xyzw, bitShifts);
+	}
+
+	void main(void)
+	{
+		float depth = unpack(texture2D(uSampler, vTexCoord));
+		gl_FragColor = vec4(depth, depth, depth, 1.0);
+	}
+</script>
+
+<script type="text/javascript">
+	"use strict";
+
+	var gl;
+	var casterShader, receiverShader, dashShader;
+	var torus_vertices, torus_indices;
+	var dashVertices, cubeVertices, cubeIndices, planeVertices, torusVertices, torusIndices;
+	var rttFramebuffer, rttColourTexture;
+	var SHADOWMAPSIZE = 512;
+
+	var showDash = false;
+	var dashsize;
+
+	var animateLight = false;
+
+	var mouseControl = false;
+	var mouseAngleX, mouseAngleY;
+	var mouseZoom = 0;
+
+	function getShader(source, type)
+	{
+		var shader;
+		switch (type)
+		{
+			case "x-shader/x-fragment":
+				shader = gl.createShader(gl.FRAGMENT_SHADER);
+				break;
+			case "x-shader/x-vertex":
+				shader = gl.createShader(gl.VERTEX_SHADER);
+				break;
+			default:
+				console.log(type);
+				return null;
+		}
+
+		gl.shaderSource(shader, source);
+		gl.compileShader(shader);
+
+		if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS))
+		{
+			console.log(gl.getShaderInfoLog(shader));
+			return null;
+		}
+
+		return shader;
+	}
+
+	function createSolidTexture(r, g, b)
+	{
+		var data = new Uint8Array([r, g, b]);
+		var texture = gl.createTexture();
+		gl.activeTexture(gl.TEXTURE0);
+		gl.bindTexture(gl.TEXTURE_2D, texture);
+		gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, 1, 1, 0, gl.RGB, gl.UNSIGNED_BYTE, data);
+		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+		gl.bindTexture(gl.TEXTURE_2D, null);
+		return texture;
+	}
+
+	function loadTexture(src, callback)
+	{
+		var texture = createSolidTexture(255, 255, 255);
+
+		var image = new Image();
+		image.crossOrigin = "anonymous";
+		image.addEventListener("load", function()
+		{
+			gl.activeTexture(gl.TEXTURE0);
+			gl.bindTexture(gl.TEXTURE_2D, texture);
+			gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+			gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+			gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+			gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+			gl.generateMipmap(gl.TEXTURE_2D);
+			gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+			gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+			gl.bindTexture(gl.TEXTURE_2D, null);
+
+			if (callback)
+			{
+				callback(texture);
+			}
+		});
+
+		image.src = src;
+		return texture;
+	}
+
+	function generateTorus()
+	{
+		var outer_radius = 1.0;
+		var inner_radius = 0.5;
+		var num_rings = 32;
+		var num_segments = 32;
+		var num_vertices = (num_rings + 1) * (num_segments + 1);
+		var num_indices = num_vertices * 2 + 2;
+
+		torus_vertices = [];
+		var index = 0;
+
+		for (var i = 0; i <= num_rings; i++)
+		{
+			for (var j = 0; j <= num_segments; j++)
+			{
+				var u = i / num_rings;
+				var v = (j + u) / num_segments;
+
+				var u_angle = u * 2 * Math.PI;
+				var v_angle = v * 2 * Math.PI;
+
+				var x = Math.cos(u_angle) * (outer_radius + Math.cos(v_angle) * inner_radius);
+				var y = Math.sin(u_angle) * (outer_radius + Math.cos(v_angle) * inner_radius);
+				var z = Math.sin(v_angle) * inner_radius;
+
+				var nx = Math.cos(u_angle) * Math.cos(v_angle);
+				var ny = Math.sin(u_angle) * Math.cos(v_angle);
+				var nz = Math.sin(v_angle);
+
+				torus_vertices[index + 0] = x;
+				torus_vertices[index + 1] = y;
+				torus_vertices[index + 2] = z;
+				torus_vertices[index + 3] = u;
+				torus_vertices[index + 4] = v;
+				torus_vertices[index + 5] = nx;
+				torus_vertices[index + 6] = ny;
+				torus_vertices[index + 7] = nz;
+
+				index += 8;
+			}
+		}
+
+		torus_indices = [];
+		index = 0;
+
+		for (var i = 0; i <= num_vertices; i++)
+		{
+			torus_indices[index + 0] = i % num_vertices;
+			torus_indices[index + 1] = (i + num_segments + 1) % num_vertices;
+			index += 2;
+		}
+	}
+
+	function init()
+	{
+		dashsize = (gl.drawingBufferHeight < gl.drawingBufferWidth) ? 0.33 * gl.drawingBufferHeight : 0.33 * gl.drawingBufferWidth;
+
+		var vsCaster = getShader($("#shader-vs-caster").html(),  $("#shader-vs-caster").attr("type"));
+		var psCaster = getShader($("#shader-fs-caster").html(),  $("#shader-fs-caster").attr("type"));
+
+		casterShader = gl.createProgram();
+		gl.attachShader(casterShader, vsCaster);
+		gl.attachShader(casterShader, psCaster);
+		gl.linkProgram(casterShader);
+
+		if (!gl.getProgramParameter(casterShader, gl.LINK_STATUS))
+		{
+			console.log("Could not initialise caster shaders");
+			return false;
+		}
+
+		var vsReceiver = getShader($("#shader-vs-receiver").html(),  $("#shader-vs-receiver").attr("type"));
+		var psReceiver = getShader($("#shader-fs-receiver").html(),  $("#shader-fs-receiver").attr("type"));
+
+		receiverShader = gl.createProgram();
+		gl.attachShader(receiverShader, vsReceiver);
+		gl.attachShader(receiverShader, psReceiver);
+		gl.linkProgram(receiverShader);
+
+		if (!gl.getProgramParameter(receiverShader, gl.LINK_STATUS))
+		{
+			console.log("Could not initialise receiver shaders");
+			return false;
+		}
+
+		var vsDash = getShader($("#shader-vs-dash").html(),  $("#shader-vs-dash").attr("type"));
+		var psDash = getShader($("#shader-fs-dash").html(),  $("#shader-fs-dash").attr("type"));
+
+		dashShader = gl.createProgram();
+		gl.attachShader(dashShader, vsDash);
+		gl.attachShader(dashShader, psDash);
+		gl.linkProgram(dashShader);
+
+		if (!gl.getProgramParameter(dashShader, gl.LINK_STATUS))
+		{
+			console.log("Could not initialise dash shaders");
+			return false;
+		}
+
+		dashVertices = gl.createBuffer();
+		gl.bindBuffer(gl.ARRAY_BUFFER, dashVertices);
+		gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(dash_vertices), gl.STATIC_DRAW);
+
+		cubeVertices = gl.createBuffer();
+		gl.bindBuffer(gl.ARRAY_BUFFER, cubeVertices);
+		gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(cube_vertices), gl.STATIC_DRAW);
+
+		cubeIndices = gl.createBuffer();
+		gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, cubeIndices);
+		gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(cube_indices), gl.STATIC_DRAW);
+
+		generateTorus();
+
+		torusVertices = gl.createBuffer();
+		gl.bindBuffer(gl.ARRAY_BUFFER, torusVertices);
+		gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(torus_vertices), gl.STATIC_DRAW);
+
+		torusIndices = gl.createBuffer();
+		gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, torusIndices);
+		gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(torus_indices), gl.STATIC_DRAW);
+
+		planeVertices = gl.createBuffer();
+		gl.bindBuffer(gl.ARRAY_BUFFER, planeVertices);
+		gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(plane_vertices), gl.STATIC_DRAW);
+
+		rttFramebuffer = gl.createFramebuffer();
+		gl.bindFramebuffer(gl.FRAMEBUFFER, rttFramebuffer);
+		rttFramebuffer.width = rttFramebuffer.height = SHADOWMAPSIZE;
+
+		rttColourTexture = gl.createTexture();
+		gl.activeTexture(gl.TEXTURE0);
+		gl.bindTexture(gl.TEXTURE_2D, rttColourTexture);
+		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+		gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, rttFramebuffer.width, rttFramebuffer.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+
+		var renderBuffer = gl.createRenderbuffer();
+    	gl.bindRenderbuffer(gl.RENDERBUFFER, renderBuffer);
+    	gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, rttFramebuffer.width, rttFramebuffer.height);
+
+		gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, rttColourTexture, 0);
+		gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, renderBuffer);
+
+		if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) != gl.FRAMEBUFFER_COMPLETE)
+		{
+			console.log("Could not initialize shadow map: " + status);
+			return false;
+		}
+
+		gl.bindTexture(gl.TEXTURE_2D, null);
+		gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+		return true;
+	}
+
+	var tick = (function(callback)
+	{
+		return window.requestAnimationFrame || window.webkitRequestAnimationFrame || window.mozRequestAnimationFrame
+			|| window.oRequestAnimationFrame || window.msRequestAnimationFrame;
+	})();
+
+	function draw(timestamp)
+	{
+		var now = new Date().getTime();
+		if (draw.timeStamp == undefined)
+			draw.timeStamp = now;
+
+		draw.frameCount = (draw.frameCount == undefined) ? 0 : draw.frameCount + 1;
+
+		if (now - draw.timeStamp >= 1000)
+		{
+			$('#fps').text(draw.frameCount);
+			draw.frameCount = 0;
+			draw.timeStamp = now;
+		}
+
+		draw.boxAngle = (draw.boxAngle == undefined) ? 0 : draw.boxAngle + 1;
+		if (draw.boxAngle >= 360)
+			draw.boxAngle = 0;
+
+		draw.viewAngle = (draw.viewAngle == undefined) ? 0 : draw.viewAngle + 1;
+		if (draw.viewAngle >= 3600)
+			draw.viewAngle = 0;
+
+		if (draw.lightAngle == undefined)
+			draw.lightAngle = 0;
+		if (animateLight)
+			draw.lightAngle += 1;
+		if (draw.lightAngle >= 500)
+			draw.lightAngle = 0;
+
+		var eye = vec3.fromValues(Math.cos(2 * Math.PI / 500 * draw.lightAngle) * 5.0, 4.0, Math.sin(2 * Math.PI / 500 * draw.lightAngle) * 5.0);
+
+		var matLightProj = mat4.create();
+		var matLightView = mat4.create();
+
+		// render shadow map
+		{
+			gl.cullFace(gl.FRONT);
+			gl.bindFramebuffer(gl.FRAMEBUFFER, rttFramebuffer);
+
+			gl.viewport(0, 0, rttFramebuffer.width, rttFramebuffer.height);
+
+			gl.clearDepth(1.0);
+			gl.clearColor(1.0, 1.0, 1.0, 1.0);
+			gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+			mat4.ortho(matLightProj, -5, 5, -5, 5, 1.0, 15.0);
+
+			mat4.lookAt(matLightView, eye, [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+
+			var matWorld = mat4.create();
+
+			// torus
+			{
+				mat4.identity(matWorld);
+				mat4.translate(matWorld, matWorld, [0, 2.0, 0]);
+				mat4.rotate(matWorld, matWorld, 2 * Math.PI / 360 * draw.boxAngle, [0.66, 0.0, 0.34]);
+
+				gl.useProgram(casterShader);
+
+				gl.uniformMatrix4fv(gl.getUniformLocation(casterShader, "matProj"), false, matLightProj);
+				gl.uniformMatrix4fv(gl.getUniformLocation(casterShader, "matView"), false, matLightView);
+				gl.uniformMatrix4fv(gl.getUniformLocation(casterShader, "matWorld"), false, matWorld);
+
+				gl.enableVertexAttribArray(gl.getAttribLocation(casterShader, "aVertex"));
+
+				gl.bindBuffer(gl.ARRAY_BUFFER, torusVertices);
+				gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, torusIndices);
+				gl.vertexAttribPointer(gl.getAttribLocation(casterShader, "aVertex"), 3, gl.FLOAT, false, 32, 0);
+
+				gl.drawElements(gl.TRIANGLE_STRIP, torus_indices.length, gl.UNSIGNED_SHORT, 0);
+
+				gl.disableVertexAttribArray(gl.getAttribLocation(casterShader, "aVertex"));
+			}
+
+			// cube
+			{
+				mat4.identity(matWorld);
+				mat4.translate(matWorld, matWorld, [2.0, 1.0, 2.0]);
+				mat4.rotate(matWorld, matWorld, 2 * Math.PI / 360 * 45, [0.0, 1.0, 0.0]);
+				mat4.scale(matWorld, matWorld, [0.75, 1.0, 0.25]);
+
+				gl.useProgram(casterShader);
+
+				gl.uniformMatrix4fv(gl.getUniformLocation(casterShader, "matProj"), false, matLightProj);
+				gl.uniformMatrix4fv(gl.getUniformLocation(casterShader, "matView"), false, matLightView);
+				gl.uniformMatrix4fv(gl.getUniformLocation(casterShader, "matWorld"), false, matWorld);
+
+				gl.enableVertexAttribArray(gl.getAttribLocation(casterShader, "aVertex"));
+
+				gl.bindBuffer(gl.ARRAY_BUFFER, cubeVertices);
+				gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, cubeIndices);
+				gl.vertexAttribPointer(gl.getAttribLocation(casterShader, "aVertex"), 3, gl.FLOAT, false, 32, 0);
+
+				gl.drawElements(gl.TRIANGLES, 36, gl.UNSIGNED_SHORT, 0);
+
+				gl.disableVertexAttribArray(gl.getAttribLocation(casterShader, "aVertex"));
+			}
+
+			// cube
+			{
+				mat4.identity(matWorld);
+				mat4.translate(matWorld, matWorld, [-2.0, 0.25, -2.0]);
+				mat4.scale(matWorld, matWorld, [1.0, 0.25, 1.0]);
+
+				gl.useProgram(casterShader);
+
+				gl.uniformMatrix4fv(gl.getUniformLocation(casterShader, "matProj"), false, matLightProj);
+				gl.uniformMatrix4fv(gl.getUniformLocation(casterShader, "matView"), false, matLightView);
+				gl.uniformMatrix4fv(gl.getUniformLocation(casterShader, "matWorld"), false, matWorld);
+
+				gl.enableVertexAttribArray(gl.getAttribLocation(casterShader, "aVertex"));
+
+				gl.bindBuffer(gl.ARRAY_BUFFER, cubeVertices);
+				gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, cubeIndices);
+				gl.vertexAttribPointer(gl.getAttribLocation(casterShader, "aVertex"), 3, gl.FLOAT, false, 32, 0);
+
+				gl.drawElements(gl.TRIANGLES, 36, gl.UNSIGNED_SHORT, 0);
+
+				gl.disableVertexAttribArray(gl.getAttribLocation(casterShader, "aVertex"));
+			}
+		}
+
+		// render scene
+		{
+			gl.cullFace(gl.BACK);
+			gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+			gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+
+			gl.clearDepth(1.0);
+			gl.clearColor(0.33, 0.66, 1.0, 1.0);
+			gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+			var matProj = mat4.create();
+			mat4.perspective(matProj, 2 * Math.PI / 360 * 45, gl.drawingBufferWidth / gl.drawingBufferHeight, 1.0, 100.0);
+
+			var matView = mat4.create();
+			mat4.identity(matView);
+
+			if (mouseControl)
+			{
+				mat4.translate(matView, matView, [0, 0, -15.0 + mouseZoom]);
+				mat4.rotate(matView, matView, Math.PI * mouseAngleY / 4, [1.0, 0.0, 0.0]);
+				mat4.rotate(matView, matView, Math.PI * mouseAngleX, [0.0, 1.0, 0.0]);
+			}
+			else
+			{
+				mat4.translate(matView, matView, [0, 0, -15.0]);
+				mat4.rotate(matView, matView, 2 * Math.PI / 360 * 25, [1.0, 0.0, 0.0]);
+				mat4.rotate(matView, matView, 2 * Math.PI / 360 * 45, [0.0, 1.0, 0.0]);
+				mat4.rotate(matView, matView, 2 * Math.PI / 3600 * draw.viewAngle, [0.0, 1.0, 0.0]);
+			}
+
+			var matWorld = mat4.create();
+
+			// torus
+			{
+				mat4.identity(matWorld);
+				mat4.translate(matWorld, matWorld, [0, 2.0, 0]);
+				mat4.rotate(matWorld, matWorld, 2 * Math.PI / 360 * draw.boxAngle, [0.66, 0.0, 0.34]);
+
+				gl.useProgram(receiverShader);
+
+				gl.activeTexture(gl.TEXTURE0);
+				gl.bindTexture(gl.TEXTURE_2D, rttColourTexture);
+				gl.uniform1i(gl.getUniformLocation(receiverShader, "uShadowSampler"), 0);
+
+				gl.uniformMatrix4fv(gl.getUniformLocation(receiverShader, "matLightProj"), false, matLightProj);
+				gl.uniformMatrix4fv(gl.getUniformLocation(receiverShader, "matLightView"), false, matLightView);
+				gl.uniformMatrix4fv(gl.getUniformLocation(receiverShader, "matProj"), false, matProj);
+				gl.uniformMatrix4fv(gl.getUniformLocation(receiverShader, "matView"), false, matView);
+				gl.uniformMatrix4fv(gl.getUniformLocation(receiverShader, "matWorld"), false, matWorld);
+				gl.uniform3fv(gl.getUniformLocation(receiverShader, "uLight"), eye);
+				gl.uniform3fv(gl.getUniformLocation(receiverShader, "uColour"), [1.0, 0.43, 0.78]);
+
+				gl.enableVertexAttribArray(gl.getAttribLocation(receiverShader, "aVertex"));
+				gl.enableVertexAttribArray(gl.getAttribLocation(receiverShader, "aNormal"));
+
+				gl.bindBuffer(gl.ARRAY_BUFFER, torusVertices);
+				gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, torusIndices);
+				gl.vertexAttribPointer(gl.getAttribLocation(receiverShader, "aVertex"), 3, gl.FLOAT, false, 32, 0);
+				//gl.vertexAttribPointer(gl.getAttribLocation(receiverShader, "aTexCoord"), 2, gl.FLOAT, false, 32, 12);
+				gl.vertexAttribPointer(gl.getAttribLocation(receiverShader, "aNormal"), 3, gl.FLOAT, false, 32, 20);
+
+				gl.drawElements(gl.TRIANGLE_STRIP, torus_indices.length, gl.UNSIGNED_SHORT, 0);
+
+				gl.disableVertexAttribArray(gl.getAttribLocation(receiverShader, "aVertex"));
+				gl.disableVertexAttribArray(gl.getAttribLocation(receiverShader, "aNormal"));
+
+				gl.activeTexture(gl.TEXTURE0);
+				gl.bindTexture(gl.TEXTURE_2D, null);
+			}
+
+			// cube
+			{
+				mat4.identity(matWorld);
+				mat4.translate(matWorld, matWorld, [2.0, 1.0, 2.0]);
+				mat4.rotate(matWorld, matWorld, 2 * Math.PI / 360 * 45, [0.0, 1.0, 0.0]);
+				mat4.scale(matWorld, matWorld, [0.75, 1.0, 0.25]);
+
+				gl.useProgram(receiverShader);
+
+				gl.activeTexture(gl.TEXTURE0);
+				gl.bindTexture(gl.TEXTURE_2D, rttColourTexture);
+				gl.uniform1i(gl.getUniformLocation(receiverShader, "uShadowSampler"), 0);
+
+				gl.uniformMatrix4fv(gl.getUniformLocation(receiverShader, "matLightProj"), false, matLightProj);
+				gl.uniformMatrix4fv(gl.getUniformLocation(receiverShader, "matLightView"), false, matLightView);
+				gl.uniformMatrix4fv(gl.getUniformLocation(receiverShader, "matProj"), false, matProj);
+				gl.uniformMatrix4fv(gl.getUniformLocation(receiverShader, "matView"), false, matView);
+				gl.uniformMatrix4fv(gl.getUniformLocation(receiverShader, "matWorld"), false, matWorld);
+				gl.uniform3fv(gl.getUniformLocation(receiverShader, "uLight"), eye);
+				gl.uniform3fv(gl.getUniformLocation(receiverShader, "uColour"), [0.78, 1.0, 0.43]);
+
+				gl.enableVertexAttribArray(gl.getAttribLocation(receiverShader, "aVertex"));
+				gl.enableVertexAttribArray(gl.getAttribLocation(receiverShader, "aNormal"));
+
+				gl.bindBuffer(gl.ARRAY_BUFFER, cubeVertices);
+				gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, cubeIndices);
+				gl.vertexAttribPointer(gl.getAttribLocation(receiverShader, "aVertex"), 3, gl.FLOAT, false, 32, 0);
+				//gl.vertexAttribPointer(gl.getAttribLocation(receiverShader, "aTexCoord"), 2, gl.FLOAT, false, 32, 12);
+				gl.vertexAttribPointer(gl.getAttribLocation(receiverShader, "aNormal"), 3, gl.FLOAT, false, 32, 20);
+
+				gl.drawElements(gl.TRIANGLES, 36, gl.UNSIGNED_SHORT, 0);
+
+				gl.disableVertexAttribArray(gl.getAttribLocation(receiverShader, "aVertex"));
+				gl.disableVertexAttribArray(gl.getAttribLocation(receiverShader, "aNormal"));
+
+				gl.activeTexture(gl.TEXTURE0);
+				gl.bindTexture(gl.TEXTURE_2D, null);
+			}
+
+			// cube
+			{
+				mat4.identity(matWorld);
+				mat4.translate(matWorld, matWorld, [-2.0, 0.25, -2.0]);
+				mat4.scale(matWorld, matWorld, [1.0, 0.25, 1.0]);
+
+				gl.useProgram(receiverShader);
+
+				gl.activeTexture(gl.TEXTURE0);
+				gl.bindTexture(gl.TEXTURE_2D, rttColourTexture);
+				gl.uniform1i(gl.getUniformLocation(receiverShader, "uShadowSampler"), 0);
+
+				gl.uniformMatrix4fv(gl.getUniformLocation(receiverShader, "matLightProj"), false, matLightProj);
+				gl.uniformMatrix4fv(gl.getUniformLocation(receiverShader, "matLightView"), false, matLightView);
+				gl.uniformMatrix4fv(gl.getUniformLocation(receiverShader, "matProj"), false, matProj);
+				gl.uniformMatrix4fv(gl.getUniformLocation(receiverShader, "matView"), false, matView);
+				gl.uniformMatrix4fv(gl.getUniformLocation(receiverShader, "matWorld"), false, matWorld);
+				gl.uniform3fv(gl.getUniformLocation(receiverShader, "uLight"), eye);
+				gl.uniform3fv(gl.getUniformLocation(receiverShader, "uColour"), [0.43, 0.78, 1.0]);
+
+				gl.enableVertexAttribArray(gl.getAttribLocation(receiverShader, "aVertex"));
+				gl.enableVertexAttribArray(gl.getAttribLocation(receiverShader, "aNormal"));
+
+				gl.bindBuffer(gl.ARRAY_BUFFER, cubeVertices);
+				gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, cubeIndices);
+				gl.vertexAttribPointer(gl.getAttribLocation(receiverShader, "aVertex"), 3, gl.FLOAT, false, 32, 0);
+				//gl.vertexAttribPointer(gl.getAttribLocation(receiverShader, "aTexCoord"), 2, gl.FLOAT, false, 32, 12);
+				gl.vertexAttribPointer(gl.getAttribLocation(receiverShader, "aNormal"), 3, gl.FLOAT, false, 32, 20);
+
+				gl.drawElements(gl.TRIANGLES, 36, gl.UNSIGNED_SHORT, 0);
+
+				gl.disableVertexAttribArray(gl.getAttribLocation(receiverShader, "aVertex"));
+				gl.disableVertexAttribArray(gl.getAttribLocation(receiverShader, "aNormal"));
+
+				gl.activeTexture(gl.TEXTURE0);
+				gl.bindTexture(gl.TEXTURE_2D, null);
+			}
+
+			// plane
+			{
+				mat4.identity(matWorld);
+
+				gl.useProgram(receiverShader);
+
+				gl.activeTexture(gl.TEXTURE0);
+				gl.bindTexture(gl.TEXTURE_2D, rttColourTexture);
+				gl.uniform1i(gl.getUniformLocation(receiverShader, "uShadowSampler"), 0);
+
+				gl.uniformMatrix4fv(gl.getUniformLocation(receiverShader, "matLightProj"), false, matLightProj);
+				gl.uniformMatrix4fv(gl.getUniformLocation(receiverShader, "matLightView"), false, matLightView);
+				gl.uniformMatrix4fv(gl.getUniformLocation(receiverShader, "matProj"), false, matProj);
+				gl.uniformMatrix4fv(gl.getUniformLocation(receiverShader, "matView"), false, matView);
+				gl.uniformMatrix4fv(gl.getUniformLocation(receiverShader, "matWorld"), false, matWorld);
+				gl.uniform3fv(gl.getUniformLocation(receiverShader, "uLight"), eye);
+				gl.uniform3fv(gl.getUniformLocation(receiverShader, "uColour"), [0.0, 0.5, 0.0]);
+
+				gl.enableVertexAttribArray(gl.getAttribLocation(receiverShader, "aVertex"));
+				gl.enableVertexAttribArray(gl.getAttribLocation(receiverShader, "aNormal"));
+
+				gl.bindBuffer(gl.ARRAY_BUFFER, planeVertices);
+				gl.vertexAttribPointer(gl.getAttribLocation(receiverShader, "aVertex"), 3, gl.FLOAT, false, 32, 0);
+				gl.vertexAttribPointer(gl.getAttribLocation(receiverShader, "aNormal"), 3, gl.FLOAT, false, 32, 20);
+
+				gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+				gl.disableVertexAttribArray(gl.getAttribLocation(receiverShader, "aVertex"));
+				gl.disableVertexAttribArray(gl.getAttribLocation(receiverShader, "aNormal"));
+
+				gl.activeTexture(gl.TEXTURE0);
+				gl.bindTexture(gl.TEXTURE_2D, null);
+			}
+
+			// dash
+			if (showDash)
+			{
+				var matDash = mat3.create();
+				mat3.identity(matDash);
+				mat3.translate(matDash, matDash, [gl.drawingBufferWidth - dashsize, gl.drawingBufferHeight - dashsize]);
+				mat3.scale(matDash, matDash, [dashsize, dashsize]);
+
+				gl.disable(gl.DEPTH_TEST);
+				gl.disable(gl.CULL_FACE);
+
+				gl.useProgram(dashShader);
+
+				gl.activeTexture(gl.TEXTURE0);
+				gl.bindTexture(gl.TEXTURE_2D, rttColourTexture);
+				gl.uniform1i(gl.getUniformLocation(dashShader, "uSampler"), 0);
+
+				gl.uniformMatrix3fv(gl.getUniformLocation(dashShader, "matWorld"), false, matDash);
+				gl.uniform2fv(gl.getUniformLocation(dashShader, "uResolution"), [gl.drawingBufferWidth, gl.drawingBufferHeight]);
+
+				gl.enableVertexAttribArray(gl.getAttribLocation(dashShader, "aVertex"));
+				gl.enableVertexAttribArray(gl.getAttribLocation(dashShader, "aTexCoord"));
+
+				gl.bindBuffer(gl.ARRAY_BUFFER, dashVertices);
+				gl.vertexAttribPointer(gl.getAttribLocation(dashShader, "aVertex"), 2, gl.FLOAT, false, 16, 0);
+				gl.vertexAttribPointer(gl.getAttribLocation(dashShader, "aTexCoord"), 2, gl.FLOAT, false, 16, 8);
+
+				gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+				gl.disableVertexAttribArray(gl.getAttribLocation(dashShader, "aVertex"));
+				gl.disableVertexAttribArray(gl.getAttribLocation(dashShader, "aTexCoord"));
+
+				gl.bindTexture(gl.TEXTURE_2D, null);
+
+				gl.enable(gl.DEPTH_TEST);
+				gl.enable(gl.CULL_FACE);
+			}
+		}
+
+		gl.flush();
+		tick(draw);
+	}
+
+	$(function()
+	{
+		$('#yesdash').click(function(event)
+		{
+			showDash = ($(this).is(':checked'));
+		});
+
+		$('#yeslight').click(function(event)
+		{
+			animateLight = ($(this).is(':checked'));
+		});
+
+		$('#yesmouse').click(function(event)
+		{
+			mouseControl = ($(this).is(':checked'));
+		});
+
+		$('#scene-canvas').click(function(event)
+		{
+			mouseControl = !mouseControl;
+			$('#yesmouse').attr('checked', mouseControl);
+		});
+
+		$('#scene-canvas').mousemove(function(event)
+		{
+			mouseAngleX = (event.pageX / $('#scene-canvas').width()) * 2 - 1;
+			mouseAngleY = (event.pageY / $('#scene-canvas').height()) * 2 - 1;
+		});
+
+		$('#scene-canvas').mousewheel(function(event)
+		{
+			mouseZoom += 0.25 * event.deltaY;
+		});
+
+		var canvas = $('#scene-canvas')[0];
+		canvas.width = $('#scene-frame').width();
+		canvas.height = $('#scene-frame').height();
+
+		var webgl_names = ["webgl", "experimental-webgl", "webkit-3d", "moz-webgl"];
+		for (var i = 0; i < webgl_names.length; i++)
+		{
+			try
+			{
+				gl = canvas.getContext(webgl_names[i]);
+			}
+			catch (e)
+			{
+				gl = null;
+			}
+
+			if (gl)
+			{
+				break;
+			}
+		}
+
+		if (!gl)
+		{
+			console.log("Could not initialise WebGL");
+			return false;
+		}
+
+		console.log("WebGL version: " + gl.getParameter(gl.VERSION));
+		console.log("Shading language version: " + gl.getParameter(gl.SHADING_LANGUAGE_VERSION));
+		console.log("Vendor: " + gl.getParameter(gl.VENDOR));
+		console.log("Renderer: " + gl.getParameter(gl.RENDERER));
+		console.log("Supported extensions: " + gl.getSupportedExtensions().join(", "));
+
+		gl.enable(gl.DEPTH_TEST);
+		gl.enable(gl.CULL_FACE);
+		gl.frontFace(gl.CCW);
+
+		if (init())
+		{
+			tick(draw);
+		}
+	});
+</script>
+</head>
+<body>
+	<div id="scene-frame">
+		<canvas id="scene-canvas">
+			Sorry, but your browser does not support WebGL or does not have it enabled. To get a WebGL-enabled browser, please see:
+			<a href="http://www.khronos.org/webgl/wiki/Getting_a_WebGL_Implementation" target="_blank">Getting a WebGL Implementation</a>
+		</canvas>
+		<div id="fps-frame" class="ui-frame">
+			FPS: <span id="fps">0</span>
+		</div>
+	</div>
+	<div id="settings-frame" class="ui-frame">
+		<input type=checkbox id="yeslight">Animate light
+		<input type=checkbox id="yesdash">Display shadow map
+		<input type=checkbox id="yesmouse">Enable mouse control
+	</div>
+</body>
+</html>
